@@ -4,18 +4,17 @@ Tools for the agent to use.
 from langchain_core.tools import tool
 from sqlalchemy import create_engine, text, Engine
 import pandas as pd
-from scout import env
 from langgraph.types import Command
 from langchain_core.tools.base import InjectedToolCallId
 from typing import Annotated
 from langchain_core.messages import ToolMessage
 
 
+from pathlib import Path
+
 class ServerSession:
-    """A session for server-side state management and operations. 
-    
-    In practice, this would be a separate service from where the agent is running and the agent would communicate with it using a REST API. In this simplified example, we use it to persist the db engine and data returned from the query_db tool.
-    """
+    """A session for server-side state management and operations."""
+
     def __init__(self):
         self.engine: Engine = None
         self.df: pd.DataFrame = None
@@ -24,27 +23,16 @@ class ServerSession:
 
     def _get_engine(self):
         if self.engine is None:
-            # Configure SQLAlchemy for session pooling
-            _engine = create_engine(
-                env.SUPABASE_URL,
-                pool_size=5,                # Smaller pool size since the pooler manages connections
-                max_overflow=5,             # Fewer overflow connections needed
-                pool_timeout=10,            # Shorter timeout for getting connections
-                pool_recycle=1800,          # Recycle connections more frequently
-                pool_pre_ping=True,         # Keep this to verify connections
-                pool_use_lifo=True,         # Keep LIFO to reduce number of open connections
-                connect_args={
-                    "application_name": "onlyvans_agent",
-                    "options": "-c statement_timeout=30000",
-                    # Keepalives less important with transaction pooler but still good practice
-                    "keepalives": 1,
-                    "keepalives_idle": 60,
-                    "keepalives_interval": 30,
-                    "keepalives_count": 3
-                }
-            )
+            # Resolve path to local SQLite DB
+            BASE_DIR = Path(__file__).resolve().parent.parent
+            DB_PATH = BASE_DIR / "db" / "my_local_db.sqlite"
+
+            # Create SQLite engine
+            _engine = create_engine(f"sqlite:///{DB_PATH}")
             return _engine
+
         return self.engine
+
 
 
 # Create a global instance of the ServerSession
@@ -53,19 +41,17 @@ session = ServerSession()
 
 @tool
 def query_db(query: str) -> str:
-    """Query the database using Postgres SQL.
+    """Query the database using sqlite.
 
     Args:
-        query: The SQL query to execute. Must be a valid postgres SQL string that can be executed directly.
+        query: The SQL query to execute. Must be a valid sqlite SQL string that can be executed directly.
 
     Returns:
         str: The query result as a markdown table.
     """
     try:
-        # Use the global engine in the server session to connect to Supabase
-        with session.engine.connect().execution_options(
-            isolation_level="READ COMMITTED"
-        ) as conn:
+        # Use the global engine in the server session to connect to sqlite
+        with session.engine.connect() as conn:
             result = conn.execute(text(query))
 
             columns = list(result.keys())
@@ -73,7 +59,7 @@ def query_db(query: str) -> str:
             df = pd.DataFrame(rows, columns=columns)
 
             # Store the DataFrame in the server session
-            session.df = df
+            session.df = df 
 
             conn.close()  # Explicitly close the connection
         return df.to_markdown(index=False)
@@ -92,7 +78,7 @@ def generate_visualization(
 
     Args:
         name: The name of the visualization. Should be a short name with underscores and no spaces.
-        sql_query: The SQL query to retrieve data for the visualization. Must be a valid postgres SQL string that can be executed directly. The query will be executed and the result will be loaded into a DataFrame named 'df'.
+        sql_query: The SQL query to retrieve data for the visualization. Must be a valid sqlite SQL string that can be executed directly. The query will be executed and the result will be loaded into a DataFrame named 'df'.
         plotly_code: Python code that generates a Plotly figure. The code should create a variable named 'fig' that contains the Plotly figure object.
 
     Returns:
@@ -129,26 +115,26 @@ def generate_visualization(
     # Add SQL query to the code
 
     pre_code = f'''
-from sqlalchemy import text
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import plotly.io as pio
-import plotly
+    from sqlalchemy import text
+    import pandas as pd
+    import plotly.express as px
+    import plotly.graph_objects as go
+    import plotly.io as pio
+    import plotly
 
-# Generated SQL
-df = pd.read_sql(text("""{sql_query}"""), engine)
+    # Generated SQL
+    df = pd.read_sql(text("""{sql_query}"""), engine)
 
-# Generated plotly code
-'''
+    # Generated plotly code
+    '''
     post_code = f'''
 
-# Save the figure to JSON
-if 'fig' in locals() or 'fig' in globals():
-    fig_json = pio.to_json(fig)
-    with open('{file_path}', 'w') as f:
-        f.write(fig_json)
-'''
+    # Save the figure to JSON
+    if 'fig' in locals() or 'fig' in globals():
+        fig_json = pio.to_json(fig)
+        with open('{file_path}', 'w') as f:
+            f.write(fig_json)
+    '''
     
     # Sandwich the plotly code like this to avoid indent errors from f-string
     code = pre_code + plotly_code + post_code
@@ -194,3 +180,22 @@ if 'fig' in locals() or 'fig' in globals():
         # Get the error message
         error_message = str(e)
         return f"Error executing visualization code: {error_message}"
+
+if __name__ == "__main__":
+    from scout.tools import ServerSession  # adjust if needed
+    from sqlalchemy import text
+
+    session = ServerSession()
+
+    try:
+        with session.engine.connect() as conn:
+            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table';"))
+            tables = result.fetchall()
+            print("✅ Connection successful.")
+            print("📋 Tables in the database:")
+            for table in tables:
+                print("  -", table[0])
+
+    except Exception as e:
+        print("❌ Connection failed.")
+        print("Error:", e)

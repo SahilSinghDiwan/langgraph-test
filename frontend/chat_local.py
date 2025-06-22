@@ -14,11 +14,12 @@ def main():
         agent = Agent(
             name="Scout",
             system_prompt=prompts.scout_system_prompt,
-            model="gpt-4.1-mini-2025-04-14",
+            model="qwen3:latest",
             temperature=0.1
         )
 
-        # Stream responses
+        # Stream responsesclear
+        
         while True:
             user_input = input("User: ")
             if user_input.lower() in ["exit", "quit"]:
